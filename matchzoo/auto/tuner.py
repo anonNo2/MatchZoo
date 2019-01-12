@@ -58,24 +58,6 @@ class Tuner(object):
         for key, value in kwargs:
             self._params[key] = value
 
-    def _valiadate_metric(self, metric):
-        return metric in self._params['model'].params['task'].metrics
-
-    @classmethod
-    def _validate_model(cls, model):
-        if not isinstance(model, engine.BaseModel):
-            return False
-        elif not model.params.hyper_space:
-            print("Model hyper space empty.")
-            return False
-        else:
-            return True
-
-    @property
-    def params(self):
-        """:return: tuner configuration paratmeters."""
-        return self._params
-
     def tune(self):
         """Tune."""
         orig_params = copy.deepcopy(self._params['model'].params)
@@ -94,21 +76,18 @@ class Tuner(object):
         mode = self._params['mode']
         return self._clean_up_trials(trials, mode)
 
-    def _test_func(self, space):
-        model = self._prepare_model(space)
+    @property
+    def params(self):
+        """:return: tuner configuration paratmeters."""
+        return self._params
 
-        score = self._eval(
-            model=model,
-            train_data=self._params['train_data'],
-            test_data=self._params['test_data'],
-            metric=self._params['optimizing_metric'],
-            mode=self._params['mode'],
-            fit_kwargs=self._params['fit_kwargs'],
-            evaluate_kwargs=self._params['evaluate_kwargs'],
-        )
+    def _test_func(self, space):
+        self._prepare_model(space)
+
+        score = self._eval_model()
 
         model_id = str(uuid.uuid4())
-        self._params['model'].save(self._params['save_dir'].joinpath(model_id))
+        self._save_model(model_id)
 
         return {
             'loss': score,
@@ -118,19 +97,27 @@ class Tuner(object):
             'model_params': self._params['model'].params
         }
 
+    def _save_model(self, model_id):
+        self._params['model'].save(self._params['save_dir'].joinpath(model_id))
+
     def _prepare_model(self, space):
-        for key, value in space.items():
-            self._params['model'].params[key] = value
         model = self._params['model']
+        for key, value in space.items():
+            model.params[key] = value
         model.build()
         model.compile()
         if self._params['after_build']:
             self._params['after_build'](model)
-        return model
 
-    @classmethod
-    def _eval(cls, model, train_data, test_data, metric, mode,
-              fit_kwargs, evaluate_kwargs):
+    def _eval_model(self):
+        model = self._params['model']
+        train_data = self._params['train_data']
+        test_data = self._params['test_data']
+        metric = self._params['optimizing_metric']
+        mode = self._params['mode']
+        fit_kwargs = self._params['fit_kwargs']
+        evaluate_kwargs = self._params['evaluate_kwargs']
+
         if isinstance(train_data, matchzoo.DataPack):
             model.fit(*train_data.unpack(), **fit_kwargs)
         elif isinstance(train_data, matchzoo.DataGenerator):
@@ -141,7 +128,7 @@ class Tuner(object):
         if isinstance(test_data, matchzoo.DataPack):
             results = model.evaluate(*test_data.unpack(), **evaluate_kwargs)
         elif isinstance(test_data, matchzoo.DataGenerator):
-            results = model.evaluate_(test_data, **evaluate_kwargs)
+            results = model.evaluate(test_data, **evaluate_kwargs)
         else:
             raise ValueError
 
@@ -167,3 +154,16 @@ class Tuner(object):
             'best': _format_trial(trials.best_trial),
             'trials': [_format_trial(trial) for trial in trials.trials]
         }
+
+    @classmethod
+    def _validate_model(cls, model):
+        if not isinstance(model, engine.BaseModel):
+            return False
+        elif not model.params.hyper_space:
+            print("Model hyper space empty.")
+            return False
+        else:
+            return True
+
+    def _valiadate_metric(self, metric):
+        return metric in self._params['model'].params['task'].metrics
