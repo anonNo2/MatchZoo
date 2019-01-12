@@ -41,7 +41,7 @@ class Tuner(object):
             validator=lambda x: callable(x)
         ))
         self._params.add(engine.Param(
-            'mode', 'minimize',
+            'mode', 'maximize',
             validator=lambda mode: mode in ('minimize', 'maximize')
         ))
         self._params.add(engine.Param(
