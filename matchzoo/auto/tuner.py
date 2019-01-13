@@ -126,12 +126,14 @@ class Tuner(object):
         else:
             raise ValueError
 
-    @classmethod
-    def _format_trials(cls, trials):
+    def _format_trials(self, trials):
         def _format_one_trial(trial):
+            metric = trial['result']['loss']
+            if self._mode == 'maximize':
+                metric = -metric
             return {
                 'model_id': trial['result']['model_id'],
-                'metric': trial['result']['loss'],
+                'metric': metric,
                 'sample': trial['result']['space'],
             }
 
