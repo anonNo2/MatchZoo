@@ -11,7 +11,25 @@ from matchzoo import engine
 
 
 class Tuner(object):
-    """Tuner."""
+    """
+
+    Tuner.
+
+    Examples:
+        >>> import matchzoo as mz
+        >>> train = mz.datasets.toy.load_data('train')
+        >>> test = mz.datasets.toy.load_data('test')
+        >>> preprocesor = mz.preprocessors.NaivePreprocessor()
+        >>> train = preprocesor.fit_transform(train)
+        >>> test = preprocesor.transform(test)
+        >>> tuner = mz.auto.Tuner()
+        >>> tuner.params['model'] = mz.models.DenseBaseline()
+        >>> tuner.params['train_data'] = train
+        >>> tuner.params['test_data'] = dev
+        >>> tuner.params
+
+
+    """
 
     def __init__(self, **kwargs):
         """Tuner."""
