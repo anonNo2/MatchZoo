@@ -1,172 +1,150 @@
 """Tuner class. Currently a minimum working demo."""
 
 import copy
+import typing
 import uuid
 from pathlib import Path
 
 import hyperopt
 
-import matchzoo
+import matchzoo as mz
 from matchzoo import engine
 
 
 class Tuner(object):
-    """
-    Tuner.
+    """Tuner."""
 
-    """
-
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        model: mz.engine.BaseModel,
+        train_data: typing.Union[mz.DataPack, mz.DataGenerator],
+        test_data: mz.DataPack,
+        fit_kwargs: typing.Optional[dict] = None,
+        evaluate_kwargs: typing.Optional[dict] = None,
+        metric: typing.Union[str, mz.engine.BaseMetric] = None,
+        mode: str = 'maximize',
+        num_evals: int = 32,
+        save_dir: typing.Union[str, Path] = mz.USER_TUNED_MODELS_DIR
+    ):
         """Tuner."""
+        if evaluate_kwargs is None:
+            evaluate_kwargs = {}
+        if fit_kwargs is None:
+            fit_kwargs = {}
+        self._validate_model(model)
 
-        self._params = engine.ParamTable()
+        if metric is None:
+            metric = model.params['task'].metrics[0]
 
-        self._params.add(engine.Param(
-            'model', validator=self._validate_model
-        ))
-        self._params.add(engine.Param(
-            'train_data',
-            validator=lambda data: isinstance(
-                data, (matchzoo.DataPack, matchzoo.DataGenerator))
-        ))
-        self._params.add(engine.Param(
-            'test_data',
-            validator=lambda data: isinstance(data, matchzoo.DataPack)
-        ))
-        self._params.add(engine.Param(
-            'fit_kwargs', {}, validator=lambda x: isinstance(x, dict)
-        ))
-        self._params.add(engine.Param(
-            'evaluate_kwargs', {}, validator=lambda x: isinstance(x, dict)
-        ))
-        self._params.add(engine.Param(
-            'after_build',
-            validator=lambda x: callable(x)
-        ))
-        self._params.add(engine.Param(
-            'mode', 'maximize',
-            validator=lambda mode: mode in ('minimize', 'maximize')
-        ))
-        self._params.add(engine.Param(
-            'optimizing_metric', validator=self._valiadate_metric
-        ))
-        self._params.add(engine.Param(
-            'num_evals', 8,
-            validator=lambda max_evals: isinstance(max_evals, int)
-        ))
-        self._params.add(engine.Param(
-            'save_dir', matchzoo.USER_TUNED_MODELS_DIR,
-            validator=lambda save_dir: bool(Path(save_dir))
-        ))
-        for key, value in kwargs:
-            self._params[key] = value
+        self._validate_train_data(train_data)
+        self._validate_test_data(test_data)
+        self._validate_kwargs(fit_kwargs)
+        self._validate_kwargs(evaluate_kwargs)
+        self._validate_mode(mode)
+        self._validate_metric(model, metric)
+
+        self._model = model
+        self._train_data = train_data
+        self._test_data = test_data
+        self._fit_kwargs = fit_kwargs
+        self._evaluate_kwargs = evaluate_kwargs
+        self._metric = metric
+        self._mode = mode
+        self._num_evals = num_evals
+        self._save_dir = save_dir
 
     def tune(self):
         """Tune."""
-        orig_params = copy.deepcopy(self._params['model'].params)
+        orig_params = copy.deepcopy(self._model.params)
 
         trials = hyperopt.Trials()
 
         hyperopt.fmin(
             fn=self._test_func,
-            space=self._params['model'].params.hyper_space,
+            space=self._model.params.hyper_space,
             algo=hyperopt.tpe.suggest,
-            max_evals=self._params['num_evals'],
+            max_evals=self._num_evals,
             trials=trials
         )
 
-        self._params['model'].params = orig_params
-        mode = self._params['mode']
-        return self._clean_up_trials(trials, mode)
-
-    @property
-    def params(self):
-        """:return: tuner configuration paratmeters."""
-        return self._params
+        self._model.params = orig_params
+        return [self._clean_up_trial(trial) for trial in trials]
 
     def _test_func(self, space):
-        self._prepare_model(space)
+        for key, value in space.items():
+            self._model.params[key] = value
 
-        score = self._eval_model()
+        score = self._eval()
 
-        model_id = str(uuid.uuid4())
-        self._save_model(model_id)
+        model_id = uuid.uuid4()
+        self._model.save(self._save_dir.joinpath(model_id))
 
         return {
             'loss': score,
             'space': space,
             'status': hyperopt.STATUS_OK,
             'model_id': model_id,
-            'model_params': self._params['model'].params
         }
 
-    def _save_model(self, model_id):
-        self._params['model'].save(self._params['save_dir'].joinpath(model_id))
+    def _eval(self):
+        self._model.build()
+        self._model.compile()
 
-    def _prepare_model(self, space):
-        model = self._params['model']
-        for key, value in space.items():
-            model.params[key] = value
-        model.build()
-        model.compile()
-        if self._params['after_build']:
-            self._params['after_build'](model)
-
-    def _eval_model(self):
-        model = self._params['model']
-        train_data = self._params['train_data']
-        test_data = self._params['test_data']
-        metric = self._params['optimizing_metric']
-        mode = self._params['mode']
-        fit_kwargs = self._params['fit_kwargs']
-        evaluate_kwargs = self._params['evaluate_kwargs']
-
-        if isinstance(train_data, matchzoo.DataPack):
-            model.fit(*train_data.unpack(), **fit_kwargs)
-        elif isinstance(train_data, matchzoo.DataGenerator):
-            model.fit_generator(train_data, **fit_kwargs)
+        if isinstance(self._train_data, mz.DataPack):
+            x, y = self._train_data.unpack()
+            self._model.fit(x, y, **self._fit_kwargs)
+        elif isinstance(self._train_data, mz.DataGenerator):
+            self._model.fit_generator(self._train_data, **self._fit_kwargs)
         else:
             raise ValueError
 
-        if isinstance(test_data, matchzoo.DataPack):
-            results = model.evaluate(*test_data.unpack(), **evaluate_kwargs)
-        elif isinstance(test_data, matchzoo.DataGenerator):
-            results = model.evaluate(test_data, **evaluate_kwargs)
+        if isinstance(self._test_data, mz.DataPack):
+            x, y = self._test_data.unpack()
+            results = self._model.evaluate(x, y, **self._evaluate_kwargs)
         else:
             raise ValueError
 
-        score = results[metric]
-        if mode == 'maximize':
+        score = results[self._metric]
+        if self._mode == 'maximize':
             score = -score
         return score
 
     @classmethod
-    def _clean_up_trials(cls, trials, mode):
-        def _format_trial(trial):
-            score = trial['result']['loss']
-            if mode == 'maximize':
-                score = -score
-            return {
-                'model_id': trial['result']['model_id'],
-                'model_params': trial['result']['model_params'],
-                'metric': score,
-                'sampled_params': trial['result']['space'],
-            }
-
+    def _clean_up_trial(cls, trial):
         return {
-            'best': _format_trial(trials.best_trial),
-            'trials': [_format_trial(trial) for trial in trials.trials]
+            'model_id': trial['result']['model_id'],
+            'metric': trial['result']['loss'],
+            'sample': trial['result']['space'],
         }
 
     @classmethod
     def _validate_model(cls, model):
         if not isinstance(model, engine.BaseModel):
-            return False
+            raise TypeError
         elif not model.params.hyper_space:
-            print("Model hyper space empty.")
-            return False
-        else:
-            return True
+            raise ValueError("Model hyper space empty.")
 
-    def _valiadate_metric(self, metric):
-        return metric in self._params['model'].params['task'].metrics
+    @classmethod
+    def _validate_train_data(cls, train_data):
+        if not isinstance(train_data, (mz.DataPack, mz.DataGenerator)):
+            raise TypeError
+
+    @classmethod
+    def _validate_test_data(cls, test_data):
+        if not isinstance(test_data, mz.DataPack):
+            raise TypeError
+
+    @classmethod
+    def _validate_metric(cls, model, metric):
+        if metric not in model.params['task'].metrics:
+            raise ValueError('Model does not have the metric.')
+
+    @classmethod
+    def _validate_mode(cls, mode):
+        if mode not in ('maximize', 'minimize'):
+            raise ValueError
+
+    @classmethod
+    def _validate_kwargs(cls, kwargs):
+        if not isinstance(kwargs, dict):
+            raise TypeError
