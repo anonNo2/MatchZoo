@@ -12,7 +12,18 @@ from matchzoo import engine
 
 
 class Tuner(object):
-    """Tuner."""
+    """
+    Model parameter auto tuner.
+
+    :param model: Model to tune. `model.params` should be complete.
+    :param train_data: Training data to use. Either a preprocessed `DataPack`,
+        or a `DataGenerator`.
+    :param test_data: Testing data to use. A preprocessed `DataPack`.
+    :param fit_kwargs: Extra keyword arguments to pass to `fit`. e.g.
+        `{'batch_size': 32, 'epochs': 20}`.
+    :param evaluate_kwargs: Extra keyword arguments to pass to `evaluate`. e.g.
+        `{'batch_size': 32, 'epochs': 20}`.
+    """
 
     def __init__(
         self,
@@ -32,10 +43,8 @@ class Tuner(object):
         if fit_kwargs is None:
             fit_kwargs = {}
         self._validate_model(model)
-
         if metric is None:
             metric = model.params['task'].metrics[0]
-
         self._validate_train_data(train_data)
         self._validate_test_data(test_data)
         self._validate_kwargs(fit_kwargs)
@@ -68,28 +77,47 @@ class Tuner(object):
         )
 
         self._model.params = orig_params
-        return [self._clean_up_trial(trial) for trial in trials]
+        return self._format_trials(trials)
 
     def _test_func(self, space):
-        for key, value in space.items():
-            self._model.params[key] = value
-
-        score = self._eval()
-
-        model_id = uuid.uuid4()
-        self._model.save(self._save_dir.joinpath(model_id))
-
+        self._load_space(space)
+        self._model.build()
+        self._model.compile()
+        self._fit_model()
+        results = self._eval_model()
+        loss = self._get_loss(results)
+        model_id = str(uuid.uuid4())
+        self._save_model(model_id)
         return {
-            'loss': score,
+            'loss': loss,
             'space': space,
             'status': hyperopt.STATUS_OK,
             'model_id': model_id,
         }
 
-    def _eval(self):
-        self._model.build()
-        self._model.compile()
+    def _save_model(self, model_id):
+        self._model.save(self._save_dir.joinpath(model_id))
+        return model_id
 
+    def _load_space(self, space):
+        for key, value in space.items():
+            self._model.params[key] = value
+
+    def _get_loss(self, results):
+        loss = results[self._metric]
+        if self._mode == 'maximize':
+            loss = -loss
+        return loss
+
+    def _eval_model(self):
+        if isinstance(self._test_data, mz.DataPack):
+            x, y = self._test_data.unpack()
+            results = self._model.evaluate(x, y, **self._evaluate_kwargs)
+        else:
+            raise ValueError
+        return results
+
+    def _fit_model(self):
         if isinstance(self._train_data, mz.DataPack):
             x, y = self._train_data.unpack()
             self._model.fit(x, y, **self._fit_kwargs)
@@ -98,23 +126,18 @@ class Tuner(object):
         else:
             raise ValueError
 
-        if isinstance(self._test_data, mz.DataPack):
-            x, y = self._test_data.unpack()
-            results = self._model.evaluate(x, y, **self._evaluate_kwargs)
-        else:
-            raise ValueError
-
-        score = results[self._metric]
-        if self._mode == 'maximize':
-            score = -score
-        return score
-
     @classmethod
-    def _clean_up_trial(cls, trial):
+    def _format_trials(cls, trials):
+        def _format_one_trial(trial):
+            return {
+                'model_id': trial['result']['model_id'],
+                'metric': trial['result']['loss'],
+                'sample': trial['result']['space'],
+            }
+
         return {
-            'model_id': trial['result']['model_id'],
-            'metric': trial['result']['loss'],
-            'sample': trial['result']['space'],
+            'best': _format_one_trial(trials.best_trial),
+            'trials': [_format_one_trial(trial) for trial in trials.trials]
         }
 
     @classmethod
