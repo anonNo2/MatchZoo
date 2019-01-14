@@ -166,8 +166,10 @@ class Tuner(object):
     def _validate_model(cls, model):
         if not isinstance(model, engine.BaseModel):
             raise TypeError
-        elif not model.params.hyper_space:
+        if not model.params.hyper_space:
             raise ValueError("Model hyper space empty.")
+        if not model.params.completed():
+            raise ValueError("Model parameters not complete.")
 
     @classmethod
     def _validate_train_data(cls, train_data):
